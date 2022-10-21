@@ -16,6 +16,8 @@ class BackupschedulerPlugin(octoprint.plugin.SettingsPlugin,
 							octoprint.plugin.EventHandlerPlugin,
 							octoprint.plugin.StartupPlugin):
 
+	periods = ["daily", "weekly", "monthly"]
+
 	def __init__(self):
 		self._repeatedtimer = None
 		self.backup_pending = False
@@ -61,37 +63,27 @@ class BackupschedulerPlugin(octoprint.plugin.SettingsPlugin,
 		if self._settings.get_boolean(["daily", "enabled"]) or self._settings.get_boolean(
 				["weekly", "enabled"]) or self._settings.get_boolean(["monthly", "enabled"]):
 			if event == "Startup":
-				self.current_settings = {"daily": self._settings.get(["daily"]),
-										 "weekly": self._settings.get(["weekly"]),
-										 "monthly": self._settings.get(["monthly"])}
+				self.current_settings = {}
+				for period in self.periods:
+					self.current_settings[period] = self._settings.get(period)
+
 				backups_enabled = False
 				self._logger.debug("Clearing scheduled jobs.")
 				schedule.clear("backupscheduler")
-				if self._settings.get_boolean(["daily", "enabled"]) and self._settings.get(["daily", "time"]) != "":
-					backups_enabled = True
-					self._logger.debug("Scheduling daily backup for %s." % self._settings.get(["daily", "time"]))
-					schedule.every().day.at(self._settings.get(["daily", "time"])).do(self._perform_backup,
-																					  backup_type="daily_backups").tag(
-						"backupscheduler")
-				if self._settings.get_boolean(["weekly", "enabled"]) and self._settings.get(["weekly", "time"]) != "":
-					backups_enabled = True
-					self._logger.debug("Scheduling weekly backup for %s." % self._settings.get(["weekly", "time"]))
-					schedule.every().day.at(self._settings.get(["weekly", "time"])).do(self._perform_backup,
-																					   backup_type="weekly_backups").tag(
-						"backupscheduler")
-				if self._settings.get_boolean(["monthly", "enabled"]) and self._settings.get(["monthly", "time"]) != "":
-					backups_enabled = True
-					self._logger.debug("Scheduling monthly backup for %s." % self._settings.get(["monthly", "time"]))
-					schedule.every().day.at(self._settings.get(["monthly", "time"])).do(self._perform_backup,
-																						backup_type="monthly_backups").tag(
-						"backupscheduler")
+				for period in self.periods:
+					if self._settings.get_boolean([period, "enabled"]) and self._settings.get([period, "time"]) != "":
+						backups_enabled = True
+						self._logger.debug("Scheduling %s backup for %s." % (period, self._settings.get([period, "time"])))
+						schedule.every().day.at(self._settings.get([period, "time"])).do(self._perform_backup, backup_type=f"{period}_backups").tag("backupscheduler")
+
 				if not self._repeatedtimer and backups_enabled is True:
 					self._repeatedtimer = RepeatedTimer(60, schedule.run_pending)
 					self._repeatedtimer.start()
 			if event == "SettingsUpdated":
-				if self.current_settings != {"daily": self._settings.get(["daily"]),
-											 "weekly": self._settings.get(["weekly"]),
-											 "monthly": self._settings.get(["monthly"])}:
+				new_settings = {}
+				for period in self.periods:
+					self.new_settings[period] = self._settings.get(period)
+				if self.current_settings != new_settings:
 					self._logger.debug("Settings updated.")
 					self.on_event("Startup", {})
 			if event in ("PrintFailed", "PrintDone") and self.backup_pending is True:
@@ -107,53 +99,20 @@ class BackupschedulerPlugin(octoprint.plugin.SettingsPlugin,
 				self.backup_pending_type.append(backup_type)
 			return
 		exclusions = []
-		retention = 0
-		if backup_type == "monthly_backups":
-			if datetime.now().day == self._settings.get_int(["monthly", "day"]) and self._settings.get_boolean(
-					["monthly", "enabled"]):
-				if self._settings.get_boolean(["monthly", "exclude_uploads"]):
+		backup_period = backup_type.replace("_backups", "")
+		for period in self.periods + ["daily", "startup"]:
+			if datetime.now().day == self._settings.get_int([period, "day"]) and self._settings.get_boolean(
+					[period, "enabled"]):
+				if self._settings.get_boolean([period, "exclude_uploads"]):
 					exclusions.append("uploads")
-				if self._settings.get_boolean(["monthly", "exclude_timelapse"]):
+				if self._settings.get_boolean([period, "exclude_timelapse"]):
 					exclusions.append("timelapse")
-				retention = self._settings.get_int(["monthly", "retention"])
-				if "monthly_backups" in self.backup_pending_type:
-					self.backup_pending_type.remove("monthly_backups")
 			else:
-				return
-		if backup_type == "weekly_backups":
-			if datetime.now().isoweekday() == self._settings.get_int(["weekly", "day"]) and self._settings.get_boolean(
-					["weekly", "enabled"]):
-				if self._settings.get_boolean(["weekly", "exclude_uploads"]):
-					exclusions.append("uploads")
-				if self._settings.get_boolean(["weekly", "exclude_timelapse"]):
-					exclusions.append("timelapse")
-				retention = self._settings.get_int(["weekly", "retention"])
-				if "weekly_backups" in self.backup_pending_type:
-					self.backup_pending_type.remove("weekly_backups")
-			else:
-				return
-		if backup_type == "daily_backups":
-			if self._settings.get_boolean(["daily", "enabled"]):
-				if self._settings.get_boolean(["daily", "exclude_uploads"]):
-					exclusions.append("uploads")
-				if self._settings.get_boolean(["daily", "exclude_timelapse"]):
-					exclusions.append("timelapse")
-				retention = self._settings.get_int(["daily", "retention"])
-				if "daily_backups" in self.backup_pending_type:
-					self.backup_pending_type.remove("daily_backups")
-			else:
-				return
-		if backup_type == "startup_backups":
-			if self._settings.get_boolean(["startup", "enabled"]):
-				if self._settings.get_boolean(["startup", "exclude_uploads"]):
-					exclusions.append("uploads")
-				if self._settings.get_boolean(["startup", "exclude_timelapse"]):
-					exclusions.append("timelapse")
-				retention = self._settings.get_int(["startup", "retention"])
-				if "startup_backups" in self.backup_pending_type:
-					self.backup_pending_type.remove("startup_backups")
-			else:
-				return
+				continue
+
+		retention = self._settings.get_int([backup_period, "retention"])
+		if backup_type in self.backup_pending_type:
+			self.backup_pending_type.remove(backup_type)
 
 		instance_name = self._settings.global_get(["appearance", "name"]) or "octoprint"
 		backup_filename = "{}-{}-{:%Y%m%d-%H%M%S}.zip".format(instance_name, backup_type.replace("_backups", ""), datetime.now())
